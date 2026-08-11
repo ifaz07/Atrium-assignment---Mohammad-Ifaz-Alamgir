@@ -1,0 +1,21 @@
+.env
+.env.*
+!env.example
+
+node_modules/
+dist/
+build/
+.next/
+out/
+
+*.log
+npm-debug.log*
+coverage/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# typescript / next generated
+*.tsbuildinfo
+next-env.d.ts
