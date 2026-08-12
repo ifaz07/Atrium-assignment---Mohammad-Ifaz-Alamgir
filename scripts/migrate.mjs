@@ -47,13 +47,38 @@ try {
   process.exit(1);
 }
 
+await client.query(
+  'create table if not exists schema_migration (filename text primary key, applied_at timestamptz not null default now())'
+);
+
+const applied = await client.query('select filename from schema_migration');
+const appliedFiles = new Set(applied.rows.map((row) => row.filename));
+
+if (appliedFiles.size === 0 && files.includes('001_init.sql')) {
+  const existingSchema = await client.query("select to_regclass('public.person') as person_table");
+
+  if (existingSchema.rows[0].person_table) {
+    await client.query('insert into schema_migration (filename) values ($1)', ['001_init.sql']);
+    appliedFiles.add('001_init.sql');
+  }
+}
+
+let appliedCount = 0;
+
 for (const file of files) {
+  if (appliedFiles.has(file)) continue;
+
   process.stdout.write(`applying ${file} ... `);
   const sql = readFileSync(join(dir, file), 'utf8');
   try {
+    await client.query('begin');
     await client.query(sql);
+    await client.query('insert into schema_migration (filename) values ($1)', [file]);
+    await client.query('commit');
+    appliedCount += 1;
     console.log('ok');
   } catch (err) {
+    await client.query('rollback');
     console.log('failed');
     console.error(`\n${file}: ${err.message}`);
     await client.end();
@@ -62,4 +87,4 @@ for (const file of files) {
 }
 
 await client.end();
-console.log(`\n${files.length} migration(s) applied.`);
+console.log(`\n${appliedCount} migration(s) applied.`);

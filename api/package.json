@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test test/auth.test.ts test/credits.test.ts"
+    "test": "node --import tsx --test test/auth.test.ts test/credits.test.ts test/database.test.ts"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
