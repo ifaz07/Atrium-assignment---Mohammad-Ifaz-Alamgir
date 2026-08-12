@@ -20,6 +20,7 @@ test('the refund percentage follows the notice given', () => {
   assert.equal(refundPercent(hoursOfNotice(new Date('2026-11-03T15:00:00Z'), start)), 0.5);
   assert.equal(refundPercent(hoursOfNotice(new Date('2026-11-04T09:00:00Z'), start)), 0.25);
   assert.equal(refundPercent(hoursOfNotice(new Date('2026-11-05T09:00:00Z'), start)), 0);
+  assert.equal(refundPercent(hoursOfNotice(new Date('2026-11-06T09:00:00Z'), start)), 0);
 });
 
 test('a refund of part of a credit', () => {

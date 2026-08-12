@@ -19,7 +19,7 @@ export function seatFee(sessionType: string): number {
 }
 
 export function hoursOfNotice(cancelledAt: Date, startsAt: Date): number {
-  return Math.abs(startsAt.getTime() - cancelledAt.getTime()) / (1000 * 60 * 60);
+  return Math.max(0, startsAt.getTime() - cancelledAt.getTime()) / (1000 * 60 * 60);
 }
 
 export function refundPercent(hoursNotice: number): number {
@@ -30,5 +30,5 @@ export function refundPercent(hoursNotice: number): number {
 }
 
 export function refundAmount(fee: number, percent: number): number {
-  return Math.round(fee * percent);
+  return Math.floor(fee * percent);
 }
