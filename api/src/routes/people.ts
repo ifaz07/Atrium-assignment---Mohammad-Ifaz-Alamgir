@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { query } from '../db';
-import { requireSession } from '../auth';
+import { requireRole, requireSession } from '../auth';
 
 const router = Router();
 
-router.get('/', requireSession, async (req, res) => {
+router.get('/', requireSession, requireRole('admin'), async (req, res) => {
   try {
     const kind = typeof req.query.kind === 'string' && req.query.kind ? req.query.kind : null;
 

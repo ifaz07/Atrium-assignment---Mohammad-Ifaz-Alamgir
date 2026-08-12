@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { query } from '../db';
-import { requireSession } from '../auth';
+import { requireRole, requireSession } from '../auth';
 
 const router = Router();
 
-router.get('/', requireSession, async (_req, res) => {
+router.get('/', requireSession, requireRole('admin'), async (_req, res) => {
   try {
     const rooms = await query('select id, name, capacity from room order by name');
     res.json(rooms);

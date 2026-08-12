@@ -81,6 +81,17 @@ export default function AdminSessions() {
       return null;
     }
 
+    if (response.status === 403) {
+      const currentResponse = await fetch(`${apiBaseUrl}/api/me`, { credentials: 'include' });
+      if (!currentResponse.ok) {
+        router.replace('/login');
+        return null;
+      }
+      const currentPerson = await currentResponse.json();
+      router.replace(`/${currentPerson.kind}`);
+      return null;
+    }
+
     const data = await response.json();
 
     if (!response.ok || !Array.isArray(data)) {
@@ -101,7 +112,21 @@ export default function AdminSessions() {
   }
 
   useEffect(() => {
-    void loadSessions();
+    async function checkAdministrator() {
+      const response = await fetch(`${apiBaseUrl}/api/me`, { credentials: 'include' });
+      if (!response.ok) {
+        router.replace('/login');
+        return;
+      }
+      const currentPerson = await response.json();
+      if (currentPerson.kind !== 'admin') {
+        router.replace(`/${currentPerson.kind}`);
+        return;
+      }
+      await loadSessions();
+    }
+
+    void checkAdministrator();
   }, [weekStart]);
 
   useEffect(() => {

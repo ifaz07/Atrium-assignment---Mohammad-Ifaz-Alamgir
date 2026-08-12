@@ -41,6 +41,8 @@ type SessionPerson = {
   credits: number;
 };
 
+type Role = SessionPerson['kind'];
+
 async function currentSessionPerson(token: string | undefined): Promise<SessionPerson | null> {
   if (!token) return null;
 
@@ -68,6 +70,33 @@ export async function requireSession(req: Request, res: Response, next: NextFunc
 
     res.locals.personId = person.id;
     res.locals.person = person;
+    next();
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'could not validate the session' });
+  }
+}
+
+export function requireRole(...roles: Role[]) {
+  return (_req: Request, res: Response, next: NextFunction): void => {
+    const person = res.locals.person as SessionPerson | undefined;
+
+    if (!person || !roles.includes(person.kind)) {
+      res.status(403).json({ error: 'not allowed' });
+      return;
+    }
+
+    next();
+  };
+}
+
+export async function optionalSession(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const person = await currentSessionPerson(req.cookies ? req.cookies[SESSION_COOKIE] : undefined);
+    if (person) {
+      res.locals.personId = person.id;
+      res.locals.person = person;
+    }
     next();
   } catch (error) {
     console.error(error);
