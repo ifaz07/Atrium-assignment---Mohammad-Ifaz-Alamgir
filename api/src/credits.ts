@@ -29,6 +29,12 @@ export function refundPercent(hoursNotice: number): number {
   return 0;
 }
 
+export function participantRefundPercent(hoursNotice: number): number {
+  if (hoursNotice >= 48) return 1;
+  if (hoursNotice >= 24) return 0.5;
+  return 0;
+}
+
 export function refundAmount(fee: number, percent: number): number {
   return Math.floor(fee * percent);
 }

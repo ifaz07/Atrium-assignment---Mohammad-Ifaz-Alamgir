@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { query, withTransaction } from '../db';
 import { optionalSession, requireRole, requireSession } from '../auth';
-import { hoursOfNotice, refundAmount, refundPercent, roomFee, seatFee } from '../credits';
+import { hoursOfNotice, participantRefundPercent, refundAmount, refundPercent, roomFee, seatFee } from '../credits';
 import { hasRequiredCoachNotice, validateBookingTimes } from '../booking';
 
 const router = Router();
@@ -87,7 +87,7 @@ router.get('/', optionalSession, async (req, res) => {
   }
 });
 
-router.get('/:id', requireSession, async (req, res) => {
+router.get('/:id(\\d+)', requireSession, async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
@@ -142,6 +142,96 @@ router.get('/:id', requireSession, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'could not load the session' });
+  }
+});
+
+router.get('/mine/enrolments', requireSession, async (_req, res) => {
+  try {
+    const person = res.locals.person as { id: number };
+    const enrolments = await query(
+      `select enrolment.id, enrolment.status, enrolment.credits_charged, enrolment.credits_refunded,
+              enrolment.enrolled_at, enrolment.cancelled_at, session.id as session_id, session.discipline,
+              session.session_type, session.starts_at, session.ends_at, room.name as room_name
+         from enrolment join session on session.id = enrolment.session_id join room on room.id = session.room_id
+        where enrolment.person_id = $1 order by session.starts_at`,
+      [person.id]
+    );
+    res.json(enrolments);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'could not load your bookings' });
+  }
+});
+
+router.post('/:id/enrolments', requireSession, requireRole('participant', 'coach'), async (req, res) => {
+  try {
+    const sessionId = Number(req.params.id);
+    if (!Number.isInteger(sessionId)) {
+      res.status(404).json({ error: 'no such session' });
+      return;
+    }
+    const person = res.locals.person as { id: number };
+    const enrolment = await withTransaction(async (client) => {
+      const sessions = await client.query<{ id: number; coach_id: number; status: string; starts_at: Date; ends_at: Date; seat_fee_credits: number; capacity: number }>(
+        `select session.id, session.coach_id, session.status, session.starts_at, session.ends_at,
+                session.seat_fee_credits, room.capacity
+           from session join room on room.id = session.room_id where session.id = $1 for update`,
+        [sessionId]
+      );
+      if (sessions.rowCount === 0) throw new BookingError(404, 'no such session');
+      const session = sessions.rows[0];
+      if (session.status !== 'scheduled' || new Date(session.starts_at) <= new Date()) throw new BookingError(409, 'this session is not available to book');
+      if (session.coach_id === person.id) throw new BookingError(403, 'a coach cannot enrol in their own session');
+      const existing = await client.query("select id from enrolment where session_id = $1 and person_id = $2 and status = 'active'", [sessionId, person.id]);
+      if (existing.rows.length > 0) throw new BookingError(409, 'you already have a place in this session');
+      const commitments = await client.query(
+        `select id from session where coach_id = $3 and status = 'scheduled' and starts_at < $2 and ends_at > $1
+         union all select enrolment.id from enrolment join session on session.id = enrolment.session_id
+          where enrolment.person_id = $3 and enrolment.status = 'active' and session.status = 'scheduled' and session.starts_at < $2 and session.ends_at > $1 limit 1`,
+        [session.starts_at, session.ends_at, person.id]
+      );
+      if (commitments.rows.length > 0) throw new BookingError(409, 'you already have a commitment during that time');
+      const capacity = await client.query<{ count: number }>("select count(*)::int as count from enrolment where session_id = $1 and status = 'active'", [sessionId]);
+      if (capacity.rows[0].count >= session.capacity) throw new BookingError(409, 'this session is full');
+      const attendee = await client.query<{ credits: number }>('select credits from person where id = $1 and active = true for update', [person.id]);
+      if (attendee.rowCount === 0) throw new BookingError(403, 'your account is not active');
+      if (attendee.rows[0].credits < session.seat_fee_credits) throw new BookingError(409, 'insufficient credits to book this session');
+      const inserted = await client.query(
+        "insert into enrolment (session_id, person_id, status, credits_charged, credits_refunded, enrolled_at) values ($1, $2, 'active', $3, 0, now()) returning *",
+        [sessionId, person.id, session.seat_fee_credits]
+      );
+      await client.query('update person set credits = credits - $1 where id = $2', [session.seat_fee_credits, person.id]);
+      return inserted.rows[0];
+    }, 'serializable');
+    res.status(201).json(enrolment);
+  } catch (err) {
+    if (err instanceof BookingError) { res.status(err.status).json({ error: err.message }); return; }
+    if ((err as { code?: string }).code === '40001' || (err as { code?: string }).code === '23505') { res.status(409).json({ error: 'this booking could not be completed; please try again' }); return; }
+    console.error(err); res.status(500).json({ error: 'could not book this session' });
+  }
+});
+
+router.post('/:id/enrolments/cancel', requireSession, requireRole('participant', 'coach'), async (req, res) => {
+  try {
+    const sessionId = Number(req.params.id);
+    const person = res.locals.person as { id: number };
+    const cancelled = await withTransaction(async (client) => {
+      const enrolments = await client.query<{ id: number; credits_charged: number; starts_at: Date }>(
+        `select enrolment.id, enrolment.credits_charged, session.starts_at from enrolment join session on session.id = enrolment.session_id
+          where enrolment.session_id = $1 and enrolment.person_id = $2 and enrolment.status = 'active' for update`, [sessionId, person.id]
+      );
+      if (enrolments.rowCount === 0) throw new BookingError(404, 'you do not have an active booking for this session');
+      const enrolment = enrolments.rows[0];
+      const percent = participantRefundPercent(hoursOfNotice(new Date(), new Date(enrolment.starts_at)));
+      const refund = refundAmount(enrolment.credits_charged, percent);
+      await client.query("update enrolment set status = 'cancelled', credits_refunded = $1, cancelled_at = now() where id = $2", [refund, enrolment.id]);
+      await client.query('update person set credits = credits + $1 where id = $2', [refund, person.id]);
+      return { refund, percent };
+    }, 'serializable');
+    res.json({ session_id: sessionId, status: 'cancelled', refund_percent: cancelled.percent, credits_refunded: cancelled.refund });
+  } catch (err) {
+    if (err instanceof BookingError) { res.status(err.status).json({ error: err.message }); return; }
+    console.error(err); res.status(500).json({ error: 'could not cancel this booking' });
   }
 });
 
