@@ -2,18 +2,20 @@ import { Router } from 'express';
 import { query, withTransaction } from '../db';
 import { optionalSession, requireRole, requireSession } from '../auth';
 import { hoursOfNotice, refundAmount, refundPercent, roomFee, seatFee } from '../credits';
+import { hasRequiredCoachNotice, validateBookingTimes } from '../booking';
 
 const router = Router();
 
 const UPDATABLE_FIELDS = [
   'room_id',
-  'coach_id',
   'discipline',
-  'session_type',
-  'status',
   'starts_at',
   'ends_at'
 ];
+
+function overlapsClause(sessionAlias: string = 'session'): string {
+  return `${sessionAlias}.starts_at < $2 and ${sessionAlias}.ends_at > $1`;
+}
 
 router.get('/', optionalSession, async (req, res) => {
   try {
@@ -157,30 +159,15 @@ router.post('/', requireSession, requireRole('admin', 'coach'), async (req, res)
       return;
     }
 
-    const rooms = await query('select id, name, capacity from room where id = $1', [room_id]);
-    if (rooms.length === 0) {
-      res.status(400).json({ error: 'no such room' });
+    const start = new Date(starts_at);
+    const end = new Date(ends_at);
+    const timeError = validateBookingTimes({ startsAt: start, endsAt: end, sessionType: String(session_type) });
+    if (timeError) {
+      res.status(400).json({ error: timeError });
       return;
     }
-
-    const coaches = await query('select id, credits from person where id = $1 and kind = \'coach\' and active = true', [effectiveCoachId]);
-    if (coaches.length === 0) {
-      res.status(400).json({ error: 'no such coach' });
-      return;
-    }
-
-    const clashes = await query(
-      `select id, starts_at, ends_at
-         from session
-        where room_id = $1
-          and starts_at <= $3
-          and ends_at >= $2
-        limit 1`,
-      [room_id, starts_at, ends_at]
-    );
-
-    if (clashes.length > 0) {
-      res.status(409).json({ error: `${rooms[0].name} is already booked for that time` });
+    if (person.kind === 'coach' && !hasRequiredCoachNotice(start)) {
+      res.status(400).json({ error: 'coaches must book rooms at least 48 hours before the session starts' });
       return;
     }
 
@@ -188,6 +175,29 @@ router.post('/', requireSession, requireRole('admin', 'coach'), async (req, res)
     const seat = seatFee(session_type);
 
     const created = await withTransaction(async (client) => {
+      const room = await client.query<{ id: number; name: string }>('select id, name from room where id = $1', [room_id]);
+      if (room.rowCount === 0) throw new BookingError(400, 'no such room');
+
+      const coach = await client.query<{ id: number; credits: number }>(
+        "select id, credits from person where id = $1 and kind = 'coach' and active = true for update",
+        [effectiveCoachId]
+      );
+      if (coach.rowCount === 0) throw new BookingError(400, 'no such coach');
+      if (coach.rows[0].credits < fee) throw new BookingError(409, 'insufficient credits to book this room');
+
+      const commitments = await client.query(
+        `select id from session
+          where coach_id = $3 and status = 'scheduled' and ${overlapsClause()}
+         union all
+         select enrolment.id from enrolment
+           join session on session.id = enrolment.session_id
+          where enrolment.person_id = $3 and enrolment.status = 'active' and session.status = 'scheduled'
+            and ${overlapsClause()}
+         limit 1`,
+        [starts_at, ends_at, effectiveCoachId]
+      );
+      if (commitments.rows.length > 0) throw new BookingError(409, 'you already have a commitment during that time');
+
       const inserted = await client.query(
         `insert into session
            (room_id, coach_id, discipline, session_type, status, starts_at, ends_at,
@@ -200,10 +210,18 @@ router.post('/', requireSession, requireRole('admin', 'coach'), async (req, res)
       await client.query('update person set credits = credits - $1 where id = $2', [fee, effectiveCoachId]);
 
       return inserted.rows[0];
-    });
+    }, 'serializable');
 
     res.status(201).json(created);
   } catch (err) {
+    if (err instanceof BookingError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    if ((err as { code?: string }).code === '23P01' || (err as { code?: string }).code === '40001') {
+      res.status(409).json({ error: 'that room is already booked for that time' });
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: 'could not create the session' });
   }
@@ -217,7 +235,7 @@ router.patch('/:id', requireSession, async (req, res) => {
       return;
     }
 
-    const existing = await query<{ coach_id: number }>('select coach_id from session where id = $1', [id]);
+    const existing = await query('select * from session where id = $1', [id]);
     if (existing.length === 0) {
       res.status(404).json({ error: 'no such session' });
       return;
@@ -230,6 +248,23 @@ router.patch('/:id', requireSession, async (req, res) => {
     }
 
     const body = req.body || {};
+
+    const nextRoomId = body.room_id ?? existing[0].room_id;
+    const nextStartsAt = body.starts_at ?? existing[0].starts_at;
+    const nextEndsAt = body.ends_at ?? existing[0].ends_at;
+    const timeError = validateBookingTimes({
+      startsAt: new Date(nextStartsAt),
+      endsAt: new Date(nextEndsAt),
+      sessionType: existing[0].session_type
+    });
+    if (timeError) {
+      res.status(400).json({ error: timeError });
+      return;
+    }
+    if (person.kind === 'coach' && !hasRequiredCoachNotice(new Date(nextStartsAt))) {
+      res.status(400).json({ error: 'coaches must book rooms at least 48 hours before the session starts' });
+      return;
+    }
 
     const assignments: string[] = [];
     const params: unknown[] = [];
@@ -248,10 +283,25 @@ router.patch('/:id', requireSession, async (req, res) => {
 
     params.push(id);
 
-    const updated = await query(
-      `update session set ${assignments.join(', ')} where id = $${params.length} returning *`,
-      params
-    );
+    const updated = await withTransaction(async (client) => {
+      const room = await client.query('select id from room where id = $1', [nextRoomId]);
+      if (room.rowCount === 0) throw new BookingError(400, 'no such room');
+      const commitments = await client.query(
+        `select id from session where coach_id = $3 and id <> $4 and status = 'scheduled' and ${overlapsClause()}
+         union all
+         select enrolment.id from enrolment join session on session.id = enrolment.session_id
+          where enrolment.person_id = $3 and enrolment.status = 'active' and session.status = 'scheduled' and session.id <> $4
+            and ${overlapsClause()}
+         limit 1`,
+        [nextStartsAt, nextEndsAt, existing[0].coach_id, id]
+      );
+      if (commitments.rows.length > 0) throw new BookingError(409, 'the coach already has a commitment during that time');
+      const result = await client.query(
+        `update session set ${assignments.join(', ')} where id = $${params.length} returning *`,
+        params
+      );
+      return result.rows;
+    }, 'serializable');
 
     if (updated.length === 0) {
       res.status(404).json({ error: 'no such session' });
@@ -260,6 +310,14 @@ router.patch('/:id', requireSession, async (req, res) => {
 
     res.json(updated[0]);
   } catch (err) {
+    if (err instanceof BookingError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    if ((err as { code?: string }).code === '23P01' || (err as { code?: string }).code === '40001') {
+      res.status(409).json({ error: 'that room is already booked for that time' });
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: 'could not update the session' });
   }
@@ -303,7 +361,7 @@ router.post('/:id/cancel', requireSession, async (req, res) => {
       let seatsRefunded = 0;
 
       for (const enrolment of enrolments.rows) {
-        const refund = refundAmount(Number(enrolment.credits_charged), percent);
+        const refund = Number(enrolment.credits_charged);
 
         await client.query(
           `update enrolment
@@ -345,3 +403,9 @@ router.post('/:id/cancel', requireSession, async (req, res) => {
 });
 
 export default router;
+
+class BookingError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
