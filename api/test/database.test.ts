@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { verifyPassword } from '../src/auth';
 import { connectToTestDatabase, resetTestDatabase } from './helpers/test-database';
 
 test('the isolated test database accepts the starter migration', async () => {
@@ -26,6 +27,9 @@ test('the isolated test database accepts the starter migration', async () => {
     const overCapacitySessions = await client.query<{ count: number }>(
       "select count(*)::int as count from (select session.id from session join room on room.id = session.room_id left join enrolment on enrolment.session_id = session.id and enrolment.status = 'active' where session.status = 'scheduled' group by session.id, room.capacity having count(enrolment.id) > room.capacity) as sessions"
     );
+    const accounts = await client.query<{ email: string; password_hash: string }>(
+      "select email, password_hash from person where email in ('admin@atrium.local', 'sofia.marino@atrium.local', 'oscar.lindqvist@atrium.local') order by email"
+    );
 
     assert.equal(rooms.rows[0].count, 12);
     assert.equal(fractionalCredits.rows[0].count, 0);
@@ -34,6 +38,10 @@ test('the isolated test database accepts the starter migration', async () => {
     assert.equal(closedTimeSessions.rows[0].count, 0);
     assert.equal(ownEnrolments.rows[0].count, 0);
     assert.equal(overCapacitySessions.rows[0].count, 0);
+    assert.equal(accounts.rows.length, 3);
+    assert.equal(await verifyPassword('admin', accounts.rows.find((account) => account.email === 'admin@atrium.local')!.password_hash), true);
+    assert.equal(await verifyPassword('participant-demo', accounts.rows.find((account) => account.email === 'sofia.marino@atrium.local')!.password_hash), true);
+    assert.equal(await verifyPassword('coach-demo', accounts.rows.find((account) => account.email === 'oscar.lindqvist@atrium.local')!.password_hash), true);
 
     await client.query(
       "insert into session (room_id, coach_id, discipline, session_type, status, starts_at, ends_at, room_fee_credits, seat_fee_credits) values (1, 3, 'fitness', 'standard', 'scheduled', '2030-01-07 14:00:00+00', '2030-01-07 15:00:00+00', 40, 20)"

@@ -1,19 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readSession, signSession } from '../src/auth';
+import { createSessionToken, hashPassword, hashSessionToken, verifyPassword } from '../src/auth';
 
-test('a session cookie round trips and a tampered one is rejected', () => {
+test('passwords use bcrypt and session tokens are keyed before storage', async () => {
   process.env.SESSION_SECRET = 'atrium-test-secret';
 
-  const issuedAt = Date.now();
-  const cookie = signSession(41, issuedAt);
-  const session = readSession(cookie);
+  const passwordHash = await hashPassword('correct horse battery staple');
+  const token = createSessionToken();
+  const tokenHash = hashSessionToken(token);
 
-  assert.notEqual(session, null);
-  assert.equal(session ? session.personId : null, 41);
-  assert.equal(session ? session.issuedAt : null, issuedAt);
-
-  assert.equal(readSession(`42.${issuedAt}.${cookie.split('.')[2]}`), null);
-  assert.equal(readSession('41'), null);
-  assert.equal(readSession(undefined), null);
+  assert.match(passwordHash, /^\$2[aby]\$12\$/);
+  assert.equal(await verifyPassword('correct horse battery staple', passwordHash), true);
+  assert.equal(await verifyPassword('wrong password', passwordHash), false);
+  assert.notEqual(token, tokenHash);
+  assert.equal(tokenHash, hashSessionToken(token));
 });

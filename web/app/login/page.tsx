@@ -3,15 +3,17 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:4000';
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:4000';
 
 export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setError('');
 
     const res = await fetch(`${apiBaseUrl}/api/login`, {
       method: 'POST',
@@ -21,8 +23,12 @@ export default function Login() {
     });
 
     if (res.ok) {
-      router.push('/admin');
+      const person = await res.json();
+      router.push(`/${person.kind}`);
+      return;
     }
+
+    setError('Sign-in failed. Check your email and password.');
   }
 
   return (
@@ -34,6 +40,7 @@ export default function Login() {
           <input
             type="email"
             name="email"
+            required
             value={email}
             onChange={(event) => setEmail(event.target.value)}
           />
@@ -43,11 +50,13 @@ export default function Login() {
           <input
             type="password"
             name="password"
+            required
             value={password}
             onChange={(event) => setPassword(event.target.value)}
           />
         </label>
         <button type="submit">Log in</button>
+        {error ? <p role="alert">{error}</p> : null}
       </form>
     </main>
   );

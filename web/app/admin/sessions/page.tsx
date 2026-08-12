@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 type Room = { id: number; name: string; capacity: number };
 type Person = { id: number; full_name: string; email: string; kind: string };
@@ -18,7 +19,7 @@ type Session = {
   places_remaining: number;
 };
 
-const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:4000';
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:4000';
 
 const dayNames = [
   'Monday',
@@ -53,6 +54,7 @@ function startOfWeek(date: Date) {
 }
 
 export default function AdminSessions() {
+  const router = useRouter();
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [sessions, setSessions] = useState<Session[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -65,34 +67,51 @@ export default function AdminSessions() {
   const [sessionType, setSessionType] = useState(sessionTypes[1]);
   const [roomId, setRoomId] = useState('');
   const [coachId, setCoachId] = useState('');
+  const [error, setError] = useState('');
 
   const days = [0, 1, 2, 3, 4, 5, 6].map(
     (offset) => new Date(weekStart.getTime() + offset * dayMilliseconds)
   );
 
-  function loadSessions() {
-    const to = new Date(weekStart.getTime() + 7 * dayMilliseconds);
+  async function requestList<T>(url: string): Promise<T[] | null> {
+    const response = await fetch(url, { credentials: 'include' });
 
-    fetch(
-      `${apiBaseUrl}/api/sessions?from=${weekStart.toISOString()}&to=${to.toISOString()}`,
-      { credentials: 'include' }
-    )
-      .then((res) => res.json())
-      .then(setSessions);
+    if (response.status === 401) {
+      router.replace('/login');
+      return null;
+    }
+
+    const data = await response.json();
+
+    if (!response.ok || !Array.isArray(data)) {
+      setError(data.error || 'Could not load dashboard data.');
+      return null;
+    }
+
+    return data;
+  }
+
+  async function loadSessions() {
+    const to = new Date(weekStart.getTime() + 7 * dayMilliseconds);
+    const data = await requestList<Session>(
+      `${apiBaseUrl}/api/sessions?from=${weekStart.toISOString()}&to=${to.toISOString()}`
+    );
+
+    if (data) setSessions(data);
   }
 
   useEffect(() => {
-    loadSessions();
+    void loadSessions();
   }, [weekStart]);
 
   useEffect(() => {
-    fetch(`${apiBaseUrl}/api/rooms`, { credentials: 'include' })
-      .then((res) => res.json())
-      .then(setRooms);
-
-    fetch(`${apiBaseUrl}/api/people`, { credentials: 'include' })
-      .then((res) => res.json())
-      .then(setPeople);
+    void Promise.all([
+      requestList<Room>(`${apiBaseUrl}/api/rooms`),
+      requestList<Person>(`${apiBaseUrl}/api/people`)
+    ]).then(([roomData, peopleData]) => {
+      if (roomData) setRooms(roomData);
+      if (peopleData) setPeople(peopleData);
+    });
   }, []);
 
   function sessionsFor(day: Date, hour: number) {
@@ -110,7 +129,7 @@ export default function AdminSessions() {
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    await fetch(`${apiBaseUrl}/api/sessions`, {
+    const response = await fetch(`${apiBaseUrl}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -124,12 +143,24 @@ export default function AdminSessions() {
       })
     });
 
-    loadSessions();
+    if (response.status === 401) {
+      router.replace('/login');
+      return;
+    }
+
+    if (!response.ok) {
+      const data = await response.json();
+      setError(data.error || 'Could not create the session.');
+      return;
+    }
+
+    await loadSessions();
   }
 
   return (
     <main>
       <h1>Session calendar</h1>
+      {error ? <p role="alert">{error}</p> : null}
 
       <p>
         <button onClick={() => setWeekStart(new Date(weekStart.getTime() - 7 * dayMilliseconds))}>

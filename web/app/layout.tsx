@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import LogoutButton from './logout-button';
 
 export const metadata: Metadata = {
   title: 'Atrium'
@@ -14,6 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <a href="/admin">Dashboard</a>
           <a href="/admin/sessions">Calendar</a>
           <a href="/login">Log in</a>
+          <LogoutButton />
         </nav>
         {children}
       </body>
