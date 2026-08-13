@@ -10,25 +10,34 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
+    setSubmitting(true);
 
-    const res = await fetch(`${apiBaseUrl}/api/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ email, password })
-    });
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password })
+      });
 
-    if (res.ok) {
-      const person = await res.json();
-      router.push(`/${person.kind}`);
-      return;
+      if (res.ok) {
+        const person = await res.json();
+        window.dispatchEvent(new Event('atrium-auth-change'));
+        router.push(`/${person.kind}`);
+        return;
+      }
+
+      setError('Sign-in failed. Check your email and password.');
+    } catch {
+      setError('Could not reach Atrium. Check that the API is running.');
+    } finally {
+      setSubmitting(false);
     }
-
-    setError('Sign-in failed. Check your email and password.');
   }
 
   return (
@@ -55,8 +64,8 @@ export default function Login() {
             onChange={(event) => setPassword(event.target.value)}
           />
         </label>
-        <button type="submit">Log in</button>
-        {error ? <p role="alert">{error}</p> : null}
+        <button type="submit" disabled={submitting}>{submitting ? 'Logging in...' : 'Log in'}</button>
+        {error ? <p className="notice notice-error" role="alert">{error}</p> : null}
       </form>
     </main>
   );

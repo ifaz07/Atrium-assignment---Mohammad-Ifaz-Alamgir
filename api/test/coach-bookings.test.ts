@@ -146,11 +146,24 @@ test('a coach cancellation returns the correct 100 percent room-fee refund', asy
   const start = futureBusinessTime(8);
   const client = await connectToTestDatabase();
   const beforeCredits = await client.query<{ credits: number }>('select credits from person where id = 3');
+  const participant = await client.query<{ id: number; credits: number }>("select id, credits from person where kind = 'participant' order by id limit 1");
   await client.end();
 
   const booking = await book(coachCookie, 4, start, 'short');
   assert.equal(booking.status, 201);
   const created = await booking.json();
+
+  const enrol = await connectToTestDatabase();
+  try {
+    await enrol.query('update person set credits = credits - 15 where id = $1', [participant.rows[0].id]);
+    await enrol.query(
+      "insert into enrolment (session_id, person_id, status, credits_charged, credits_refunded, enrolled_at) values ($1, $2, 'active', 15, 0, now())",
+      [created.id, participant.rows[0].id]
+    );
+  } finally {
+    await enrol.end();
+  }
+
   const cancellation = await fetch(`${baseUrl}/api/sessions/${created.id}/cancel`, {
     method: 'POST',
     headers: { Cookie: coachCookie }
@@ -158,11 +171,18 @@ test('a coach cancellation returns the correct 100 percent room-fee refund', asy
   const cancelled = await cancellation.json();
   assert.equal(cancellation.status, 200);
   assert.equal(cancelled.room_fee_refunded, 30);
+  assert.equal(cancelled.enrolments_cancelled, 1);
+  assert.equal(cancelled.seat_fees_refunded, 15);
 
   const verify = await connectToTestDatabase();
   try {
     const afterCredits = await verify.query<{ credits: number }>('select credits from person where id = 3');
+    const participantAfter = await verify.query<{ credits: number }>('select credits from person where id = $1', [participant.rows[0].id]);
+    const enrolment = await verify.query<{ status: string; credits_refunded: number }>('select status, credits_refunded from enrolment where session_id = $1 and person_id = $2', [created.id, participant.rows[0].id]);
     assert.equal(afterCredits.rows[0].credits, beforeCredits.rows[0].credits);
+    assert.equal(participantAfter.rows[0].credits, participant.rows[0].credits);
+    assert.equal(enrolment.rows[0].status, 'cancelled');
+    assert.equal(enrolment.rows[0].credits_refunded, 15);
   } finally {
     await verify.end();
   }

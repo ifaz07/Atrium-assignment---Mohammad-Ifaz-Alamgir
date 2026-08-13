@@ -2,20 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { addCentreDays, centreDateString, centreLocalToIso, centreWeekMonday } from '../centre-time';
 
 type Room = { id: number; name: string; capacity: number };
-type Person = { id: number; full_name: string; email: string; kind: string };
+type Person = { id: number; full_name: string; email: string; kind: 'admin' | 'coach' | 'participant' };
 type Session = { id: number; starts_at: string; ends_at: string };
 type CurrentPerson = { kind: 'admin' | 'coach' | 'participant' };
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:4000';
-
-function startOfWeek(date: Date) {
-  const start = new Date(date);
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
-  return start;
-}
 
 export default function AdminDashboard() {
   const router = useRouter();
@@ -23,6 +17,7 @@ export default function AdminDashboard() {
   const [people, setPeople] = useState<Person[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function loadDashboard() {
@@ -39,45 +34,58 @@ export default function AdminDashboard() {
         return;
       }
 
-      const from = startOfWeek(new Date());
-      const to = new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const weekStart = centreWeekMonday(centreDateString(new Date()));
+      const from = centreLocalToIso(weekStart, '00:00');
+      const to = centreLocalToIso(addCentreDays(weekStart, 7), '00:00');
       const responses = await Promise.all([
         fetch(`${apiBaseUrl}/api/rooms`, { credentials: 'include' }),
         fetch(`${apiBaseUrl}/api/people`, { credentials: 'include' }),
-        fetch(`${apiBaseUrl}/api/sessions?from=${from.toISOString()}&to=${to.toISOString()}`, {
+        fetch(`${apiBaseUrl}/api/sessions?from=${from}&to=${to}`, {
           credentials: 'include'
         })
       ]);
 
       if (responses.some((response) => !response.ok)) {
         setError('Could not load administrator data.');
+        setLoading(false);
         return;
       }
 
       const [roomData, peopleData, sessionData] = await Promise.all(responses.map((response) => response.json()));
       if (!Array.isArray(roomData) || !Array.isArray(peopleData) || !Array.isArray(sessionData)) {
         setError('Could not load administrator data.');
+        setLoading(false);
         return;
       }
 
       setRooms(roomData);
       setPeople(peopleData);
       setSessions(sessionData);
+      setLoading(false);
     }
 
-    void loadDashboard();
+    void loadDashboard().catch(() => {
+      setError('Could not load administrator data.');
+      setLoading(false);
+    });
   }, [router]);
+
+  const participantCount = people.filter((person) => person.kind === 'participant').length;
+  const coachCount = people.filter((person) => person.kind === 'coach').length;
 
   return (
     <main>
       <h1>Administrator dashboard</h1>
-      {error ? <p role="alert">{error}</p> : null}
-      <table className="counts">
+      {loading ? <p className="notice">Loading administrator data...</p> : null}
+      {error ? <p className="notice notice-error" role="alert">{error}</p> : null}
+      {!loading && !error ? <div className="table-wrap admin-counts"><table className="counts">
         <thead>
           <tr>
             <th>Rooms</th>
             <th>Sessions this week</th>
-            <th>People</th>
+            <th>Total people</th>
+            <th>Participants</th>
+            <th>Coaches</th>
           </tr>
         </thead>
         <tbody>
@@ -85,10 +93,12 @@ export default function AdminDashboard() {
             <td>{rooms.length}</td>
             <td>{sessions.length}</td>
             <td>{people.length}</td>
+            <td>{participantCount}</td>
+            <td>{coachCount}</td>
           </tr>
         </tbody>
-      </table>
-      <p><a href="/admin/sessions">Session calendar</a></p>
+      </table></div> : null}
+      <p><a href="/calendar">Open the role-aware calendar</a></p>
     </main>
   );
 }

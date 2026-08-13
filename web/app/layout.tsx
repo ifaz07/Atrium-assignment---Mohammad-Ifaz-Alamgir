@@ -1,22 +1,22 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
-import LogoutButton from './logout-button';
+import Navigation from './navigation';
 
 export const metadata: Metadata = {
-  title: 'Atrium'
+  title: 'Atrium Coaching Centre',
+  description: 'Book coaching sessions and rooms at Atrium Coaching Centre.'
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <nav>
-          <a href="/">Sessions</a>
-          <a href="/admin">Dashboard</a>
-          <a href="/admin/sessions">Calendar</a>
-          <a href="/login">Log in</a>
-          <LogoutButton />
-        </nav>
+        <Navigation />
         {children}
       </body>
     </html>

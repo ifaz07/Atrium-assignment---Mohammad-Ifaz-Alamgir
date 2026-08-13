@@ -17,6 +17,10 @@ export function createApp() {
   );
   app.use(express.json());
   app.use(cookieParser());
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
 
   app.post('/api/login', login);
   app.post('/api/logout', logout);

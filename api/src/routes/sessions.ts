@@ -87,6 +87,46 @@ router.get('/', optionalSession, async (req, res) => {
   }
 });
 
+router.get('/catalogue/available', optionalSession, async (req, res) => {
+  try {
+    const from = typeof req.query.from === 'string' && req.query.from ? req.query.from : new Date().toISOString();
+    const to = typeof req.query.to === 'string' && req.query.to ? req.query.to : null;
+    const person = res.locals.person as { id: number; kind: 'admin' | 'coach' | 'participant' } | undefined;
+    const params: unknown[] = [from];
+    let filters = "session.status = 'scheduled' and session.starts_at >= $1";
+
+    if (to) {
+      params.push(to);
+      filters += ` and session.starts_at < $${params.length}`;
+    }
+
+    if (person?.kind === 'coach') {
+      params.push(person.id);
+      filters += ` and session.coach_id <> $${params.length}`;
+    }
+
+    const sessions = await query(
+      `select session.id, session.discipline, session.session_type, session.starts_at, session.ends_at,
+              session.seat_fee_credits, room.name as room_name, room.capacity as room_capacity,
+              count(enrolment.id)::int as enrolled_count,
+              room.capacity - count(enrolment.id)::int as places_remaining
+         from session
+         join room on room.id = session.room_id
+         left join enrolment on enrolment.session_id = session.id and enrolment.status = 'active'
+        where ${filters}
+        group by session.id, room.id
+        order by session.starts_at
+        limit 200`,
+      params
+    );
+
+    res.json(sessions);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'could not load available sessions' });
+  }
+});
+
 router.get('/:id(\\d+)', requireSession, async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -182,6 +222,9 @@ router.post('/:id/enrolments', requireSession, requireRole('participant', 'coach
       const session = sessions.rows[0];
       if (session.status !== 'scheduled' || new Date(session.starts_at) <= new Date()) throw new BookingError(409, 'this session is not available to book');
       if (session.coach_id === person.id) throw new BookingError(403, 'a coach cannot enrol in their own session');
+      const attendee = await client.query<{ credits: number }>('select credits from person where id = $1 and active = true for update', [person.id]);
+      if (attendee.rowCount === 0) throw new BookingError(403, 'your account is not active');
+      if (attendee.rows[0].credits < session.seat_fee_credits) throw new BookingError(409, 'insufficient credits to book this session');
       const existing = await client.query("select id from enrolment where session_id = $1 and person_id = $2 and status = 'active'", [sessionId, person.id]);
       if (existing.rows.length > 0) throw new BookingError(409, 'you already have a place in this session');
       const commitments = await client.query(
@@ -193,9 +236,6 @@ router.post('/:id/enrolments', requireSession, requireRole('participant', 'coach
       if (commitments.rows.length > 0) throw new BookingError(409, 'you already have a commitment during that time');
       const capacity = await client.query<{ count: number }>("select count(*)::int as count from enrolment where session_id = $1 and status = 'active'", [sessionId]);
       if (capacity.rows[0].count >= session.capacity) throw new BookingError(409, 'this session is full');
-      const attendee = await client.query<{ credits: number }>('select credits from person where id = $1 and active = true for update', [person.id]);
-      if (attendee.rowCount === 0) throw new BookingError(403, 'your account is not active');
-      if (attendee.rows[0].credits < session.seat_fee_credits) throw new BookingError(409, 'insufficient credits to book this session');
       const inserted = await client.query(
         "insert into enrolment (session_id, person_id, status, credits_charged, credits_refunded, enrolled_at) values ($1, $2, 'active', $3, 0, now()) returning *",
         [sessionId, person.id, session.seat_fee_credits]
