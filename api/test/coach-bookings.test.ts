@@ -186,4 +186,20 @@ test('a coach cancellation returns the correct 100 percent room-fee refund', asy
   } finally {
     await verify.end();
   }
+
+  const repeatedCancellation = await fetch(`${baseUrl}/api/sessions/${created.id}/cancel`, {
+    method: 'POST',
+    headers: { Cookie: coachCookie }
+  });
+  assert.equal(repeatedCancellation.status, 409);
+
+  const afterRepeat = await connectToTestDatabase();
+  try {
+    const coachCredits = await afterRepeat.query<{ credits: number }>('select credits from person where id = 3');
+    const participantCredits = await afterRepeat.query<{ credits: number }>('select credits from person where id = $1', [participant.rows[0].id]);
+    assert.equal(coachCredits.rows[0].credits, beforeCredits.rows[0].credits);
+    assert.equal(participantCredits.rows[0].credits, participant.rows[0].credits);
+  } finally {
+    await afterRepeat.end();
+  }
 });

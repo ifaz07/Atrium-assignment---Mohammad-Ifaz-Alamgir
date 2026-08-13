@@ -10,6 +10,7 @@
     "migrate": "node scripts/migrate.mjs",
     "dev:api": "npm --workspace api run dev",
     "dev:web": "npm --workspace web run dev",
+    "email:digests": "npm --workspace api run digests --",
     "build": "npm --workspace api run build && npm --workspace web run build",
     "test": "npm --workspace api run test"
   },
