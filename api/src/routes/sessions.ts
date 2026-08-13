@@ -5,15 +5,9 @@ import { hoursOfNotice, participantRefundPercent, refundAmount, refundPercent, r
 import { hasRequiredCoachNotice, validateBookingTimes } from '../booking';
 import { queueAdministrators, queueEmail } from '../email/outbox';
 import { formatCentreDateTime } from '../email/format';
+import { RescheduleError, rescheduleSession } from '../session-rescheduling';
 
 const router = Router();
-
-const UPDATABLE_FIELDS = [
-  'room_id',
-  'discipline',
-  'starts_at',
-  'ends_at'
-];
 
 function overlapsClause(sessionAlias: string = 'session'): string {
   return `${sessionAlias}.starts_at < $2 and ${sessionAlias}.ends_at > $1`;
@@ -387,95 +381,23 @@ router.patch('/:id', requireSession, async (req, res) => {
       res.status(404).json({ error: 'no such session' });
       return;
     }
-
-    const existing = await query('select * from session where id = $1', [id]);
-    if (existing.length === 0) {
-      res.status(404).json({ error: 'no such session' });
-      return;
-    }
-
     const person = res.locals.person as { id: number; kind: 'admin' | 'coach' | 'participant' };
-    if (person.kind !== 'admin' && (person.kind !== 'coach' || person.id !== existing[0].coach_id)) {
-      res.status(403).json({ error: 'not allowed' });
-      return;
-    }
-
     const body = req.body || {};
-
-    const nextRoomId = body.room_id ?? existing[0].room_id;
-    const nextStartsAt = body.starts_at ?? existing[0].starts_at;
-    const nextEndsAt = body.ends_at ?? existing[0].ends_at;
-    const timeError = validateBookingTimes({
-      startsAt: new Date(nextStartsAt),
-      endsAt: new Date(nextEndsAt),
-      sessionType: existing[0].session_type
+    if (body.room_id === undefined && body.starts_at === undefined && body.discipline === undefined) {
+      res.status(400).json({ error: 'provide a room, start time, or discipline to update' });
+      return;
+    }
+    const updated = await rescheduleSession(person, id, {
+      roomId: body.room_id,
+      startsAt: body.starts_at,
+      discipline: body.discipline
     });
-    if (timeError) {
-      res.status(400).json({ error: timeError });
-      return;
-    }
-    if (person.kind === 'coach' && !hasRequiredCoachNotice(new Date(nextStartsAt))) {
-      res.status(400).json({ error: 'coaches must book rooms at least 48 hours before the session starts' });
-      return;
-    }
-
-    const assignments: string[] = [];
-    const params: unknown[] = [];
-
-    for (const field of UPDATABLE_FIELDS) {
-      if (body[field] !== undefined) {
-        params.push(body[field]);
-        assignments.push(`${field} = $${params.length}`);
-      }
-    }
-
-    if (assignments.length === 0) {
-      res.status(400).json({ error: 'nothing to update' });
-      return;
-    }
-
-    params.push(id);
-
-    const updated = await withTransaction(async (client) => {
-      const room = await client.query('select id from room where id = $1', [nextRoomId]);
-      if (room.rowCount === 0) throw new BookingError(400, 'no such room');
-      const commitments = await client.query(
-        `select id from session where coach_id = $3 and id <> $4 and status = 'scheduled' and ${overlapsClause()}
-         union all
-         select enrolment.id from enrolment join session on session.id = enrolment.session_id
-          where enrolment.person_id = $3 and enrolment.status = 'active' and session.status = 'scheduled' and session.id <> $4
-            and ${overlapsClause()}
-         limit 1`,
-        [nextStartsAt, nextEndsAt, existing[0].coach_id, id]
-      );
-      if (commitments.rows.length > 0) throw new BookingError(409, 'the coach already has a commitment during that time');
-      const result = await client.query(
-        `update session set ${assignments.join(', ')} where id = $${params.length} returning *`,
-        params
-      );
-      const attendees = await client.query<{ id: number; email: string; full_name: string }>(
-        `select person.id, person.email, person.full_name from enrolment
-         join person on person.id = enrolment.person_id
-         where enrolment.session_id = $1 and enrolment.status = 'active'`,
-        [id]
-      );
-      for (const attendee of attendees.rows) {
-        await queueEmail(client, {
-          recipient: attendee.email,
-          subject: `Session updated: ${result.rows[0].discipline}`,
-          bodyText: `Hello ${attendee.full_name}, the session now starts on ${formatCentreDateTime(result.rows[0].starts_at)} and ends on ${formatCentreDateTime(result.rows[0].ends_at)}.`
-        });
-      }
-      return result.rows;
-    }, 'serializable');
-
-    if (updated.length === 0) {
-      res.status(404).json({ error: 'no such session' });
-      return;
-    }
-
-    res.json(updated[0]);
+    res.json(updated);
   } catch (err) {
+    if (err instanceof RescheduleError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
     if (err instanceof BookingError) {
       res.status(err.status).json({ error: err.message });
       return;

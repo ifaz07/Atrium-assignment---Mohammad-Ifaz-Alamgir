@@ -48,7 +48,10 @@ export default function ParticipantDashboard() {
     setLoading(false);
   }
 
-  async function book(sessionId: number) {
+  async function book(session: Session) {
+    const confirmed = window.confirm(`Book a place in ${session.discipline} on ${centreDateTime.format(new Date(session.starts_at))}?\n\nThis will deduct ${session.seat_fee_credits} credits from your balance.`);
+    if (!confirmed) return;
+    const sessionId = session.id;
     setMessage('');
     setActionSessionId(sessionId);
     try {
@@ -121,7 +124,7 @@ export default function ParticipantDashboard() {
       {displayedSessions.length === 0 ? <div className="empty-state"><h3>No matching sessions</h3><p>Try clearing the filters or choosing another date.</p></div> : <div className="compact-list">{displayedSessions.map((session) => {
         const alreadyBooked = activeSessionIds.has(session.id);
         const isFull = session.places_remaining < 1;
-        return <article className="session-card" key={session.id}><div><strong>{session.discipline}</strong><span>{session.session_type}</span><span>{session.room_name}</span><span>{centreDateTime.format(new Date(session.starts_at))}</span><span>{session.seat_fee_credits} credits · {session.places_remaining} places left</span></div><button type="button" disabled={alreadyBooked || isFull || actionSessionId === session.id} onClick={() => book(session.id)}>{alreadyBooked ? 'Booked' : isFull ? 'Full' : actionSessionId === session.id ? 'Booking...' : 'Book place'}</button></article>;
+        return <article className="session-card" key={session.id}><div><strong>{session.discipline}</strong><span>{session.session_type}</span><span>{session.room_name}</span><span>{centreDateTime.format(new Date(session.starts_at))}</span><span>{session.seat_fee_credits} credits · {session.places_remaining} places left</span></div><button type="button" disabled={alreadyBooked || isFull || actionSessionId === session.id} onClick={() => book(session)}>{alreadyBooked ? 'Booked' : isFull ? 'Full' : actionSessionId === session.id ? 'Booking...' : 'Book place'}</button></article>;
       })}</div>}
       {filteredSessions.length > 8 ? <button className="button-secondary show-more" type="button" onClick={() => setShowAllSessions((value) => !value)}>{showAllSessions ? 'Show fewer' : `Show more (${filteredSessions.length - 8})`}</button> : null}
     </section>

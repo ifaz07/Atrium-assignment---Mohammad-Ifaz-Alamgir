@@ -41,8 +41,9 @@ export default function Login() {
   }
 
   return (
-    <main>
-      <h1>Log in</h1>
+    <main className="login-page">
+      <section className="login-card">
+      <div><p className="eyebrow">Atrium account</p><h1>Welcome</h1><p className="muted">Use your email and password. Your dashboard will open automatically based on your account role.</p></div>
       <form onSubmit={onSubmit}>
         <label>
           <span>Email</span>
@@ -67,6 +68,7 @@ export default function Login() {
         <button type="submit" disabled={submitting}>{submitting ? 'Logging in...' : 'Log in'}</button>
         {error ? <p className="notice notice-error" role="alert">{error}</p> : null}
       </form>
+      </section>
     </main>
   );
 }

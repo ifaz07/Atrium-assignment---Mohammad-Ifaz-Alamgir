@@ -8,7 +8,7 @@
     "digests": "tsx src/run-digests.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test --test-concurrency=1 test/auth.test.ts test/credits.test.ts test/database.test.ts test/access-control.test.ts test/coach-bookings.test.ts test/participant-bookings.test.ts test/email-notifications.test.ts test/daily-digests.test.ts"
+    "test": "node --import tsx --test --test-concurrency=1 test/auth.test.ts test/credits.test.ts test/database.test.ts test/access-control.test.ts test/coach-bookings.test.ts test/participant-bookings.test.ts test/email-notifications.test.ts test/daily-digests.test.ts test/assistant.test.ts"
   },
   "dependencies": {
     "@types/bcrypt": "^6.0.0",

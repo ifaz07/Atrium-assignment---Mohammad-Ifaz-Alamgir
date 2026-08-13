@@ -15,6 +15,15 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:400
 const centreDateTime = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 const centreTime = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
 
+function timeSlotsFor(sessionType: string | undefined) {
+  const duration = sessionType === 'short' ? 45 : sessionType === 'intensive' ? 210 : 60;
+  const latestStartMinute = 21 * 60 - duration;
+  return Array.from({ length: (latestStartMinute - 7 * 60) / 15 + 1 }, (_, index) => {
+    const minutes = 7 * 60 + index * 15;
+    return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+  });
+}
+
 export default function CoachDashboard() {
   const router = useRouter();
   const [person, setPerson] = useState<Person | null>(null);
@@ -41,6 +50,11 @@ export default function CoachDashboard() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [cancellingSessionId, setCancellingSessionId] = useState<number | null>(null);
+  const [reschedulingSession, setReschedulingSession] = useState<Session | null>(null);
+  const [rescheduleRoomId, setRescheduleRoomId] = useState('');
+  const [rescheduleDate, setRescheduleDate] = useState('');
+  const [rescheduleTime, setRescheduleTime] = useState('');
+  const [reschedulingSessionId, setReschedulingSessionId] = useState<number | null>(null);
 
   async function loadDashboard() {
     const from = new Date().toISOString();
@@ -99,6 +113,10 @@ export default function CoachDashboard() {
 
   async function submitRoomBooking(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const selectedRoom = rooms.find((room) => room.id === Number(roomId));
+    const roomFee = sessionType === 'short' ? 30 : sessionType === 'intensive' ? 120 : 40;
+    const confirmed = window.confirm(`Book ${selectedRoom?.name || 'this room'} for ${discipline} on ${startDate} at ${startTime}?\n\n${sessionType} session · ${roomFee} credits will be deducted.`);
+    if (!confirmed) return;
     setMessage('');
     setSubmitting(true);
     try {
@@ -123,7 +141,10 @@ export default function CoachDashboard() {
     }
   }
 
-  async function bookPlace(sessionId: number) {
+  async function bookPlace(session: Session) {
+    const confirmed = window.confirm(`Book a place in ${session.discipline} on ${centreDateTime.format(new Date(session.starts_at))}?\n\nThis will deduct ${session.seat_fee_credits} credits from your balance.`);
+    if (!confirmed) return;
+    const sessionId = session.id;
     setMessage('');
     const response = await fetch(`${apiBaseUrl}/api/sessions/${sessionId}/enrolments`, { method: 'POST', credentials: 'include' });
     const body = await response.json();
@@ -167,6 +188,40 @@ export default function CoachDashboard() {
     }
   }
 
+  function openReschedule(session: Session) {
+    setReschedulingSession(session);
+    setRescheduleRoomId(String(rooms.find((room) => room.name === session.room_name)?.id ?? ''));
+    setRescheduleDate(centreDateString(new Date(session.starts_at)));
+    setRescheduleTime(new Intl.DateTimeFormat('en-GB', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(session.starts_at)));
+  }
+
+  async function submitReschedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!reschedulingSession) return;
+    const nextRoom = rooms.find((room) => room.id === Number(rescheduleRoomId));
+    const confirmed = window.confirm(`Move Session #${reschedulingSession.id} to ${nextRoom?.name || 'the selected room'} on ${rescheduleDate} at ${rescheduleTime}?\n\nAll active attendees move together and will receive an email notification.`);
+    if (!confirmed) return;
+    setReschedulingSessionId(reschedulingSession.id);
+    setMessage('');
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/sessions/${reschedulingSession.id}`, {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_id: Number(rescheduleRoomId), starts_at: centreLocalToIso(rescheduleDate, rescheduleTime) })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Could not reschedule this session.');
+      setMessageTone('success');
+      setMessage(`Session rescheduled. ${body.participants_moved} active attendee booking(s) moved and were notified.`);
+      setReschedulingSession(null);
+      await loadDashboard();
+    } catch (reason) {
+      setMessageTone('error');
+      setMessage(reason instanceof Error ? reason.message : 'Could not reschedule this session.');
+    } finally {
+      setReschedulingSessionId(null);
+    }
+  }
+
   useEffect(() => {
     loadDashboard().catch((reason) => { setMessageTone('error'); setMessage(reason instanceof Error ? reason.message : 'Could not load your coach dashboard.'); setLoading(false); });
   }, [router]);
@@ -185,12 +240,7 @@ export default function CoachDashboard() {
   if (loading) return <main><p className="notice">Loading your coach dashboard...</p></main>;
   if (!person) return <main><div className="notice notice-error" role="alert">{message || 'Could not load your coach dashboard.'}</div></main>;
 
-  const duration = sessionType === 'short' ? 45 : sessionType === 'intensive' ? 210 : 60;
-  const latestStartMinute = 21 * 60 - duration;
-  const timeSlots = Array.from({ length: (latestStartMinute - 7 * 60) / 15 + 1 }, (_, index) => {
-    const minutes = 7 * 60 + index * 15;
-    return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
-  });
+  const timeSlots = timeSlotsFor(sessionType);
   const displayedCatalogue = showAllCatalogue ? filteredCatalogue : filteredCatalogue.slice(0, 8);
   const displayedTeaching = showAllTeaching ? ownSessions : ownSessions.slice(0, 6);
   const displayedBusy = showAllBusy ? busySessions : busySessions.slice(0, 8);
@@ -209,7 +259,7 @@ export default function CoachDashboard() {
         const loadedAttendees = attendees[session.id] ?? [];
         const activeCount = session.enrolled_count ?? loadedAttendees.filter((attendee) => attendee.status === 'active').length;
         const cancelledCount = loadedAttendees.filter((attendee) => attendee.status === 'cancelled').length;
-        return <article className="session-card" key={session.id}><div><strong>{session.discipline}</strong><span>{session.room_name}</span><span>{centreDateTime.format(new Date(session.starts_at))}</span><span className="attendee-count">{activeCount} attending{session.room_capacity ? ` · ${session.room_capacity} capacity` : ''}</span></div><div className="session-actions"><button className="button-secondary" type="button" aria-expanded={isExpanded} aria-controls={`attendees-${session.id}`} disabled={loadingAttendeesId === session.id} onClick={() => toggleAttendees(session.id)}>{loadingAttendeesId === session.id ? 'Loading...' : isExpanded ? 'Hide attendees' : 'View attendees'}</button><button className="button-danger" type="button" disabled={cancellingSessionId === session.id} onClick={() => cancelTeachingSession(session.id)}>{cancellingSessionId === session.id ? 'Cancelling...' : 'Cancel session'}</button></div>{isExpanded ? <div className="attendee-panel" id={`attendees-${session.id}`}><strong className="attendee-summary">{activeCount} active attendee{activeCount === 1 ? '' : 's'} · {cancelledCount} cancelled</strong>{loadedAttendees.length === 0 ? <span className="muted">No participants booked.</span> : loadedAttendees.map((attendee) => <span key={attendee.id}>{attendee.full_name} - {attendee.email} - {attendee.status}</span>)}</div> : null}</article>;
+        return <article className="session-card" key={session.id}><div><strong>{session.discipline}</strong><span>{session.session_type}</span><span>Session #{session.id}</span><span>{session.room_name}</span><span>{centreDateTime.format(new Date(session.starts_at))}</span><span className="attendee-count">{activeCount} attending{session.room_capacity ? ` · ${session.room_capacity} capacity` : ''}</span></div><div className="session-actions"><button className="button-secondary" type="button" aria-expanded={isExpanded} aria-controls={`attendees-${session.id}`} disabled={loadingAttendeesId === session.id} onClick={() => toggleAttendees(session.id)}>{loadingAttendeesId === session.id ? 'Loading...' : isExpanded ? 'Hide attendees' : 'View attendees'}</button><button className="button-secondary" type="button" onClick={() => openReschedule(session)}>Reschedule</button><button className="button-danger" type="button" disabled={cancellingSessionId === session.id} onClick={() => cancelTeachingSession(session.id)}>{cancellingSessionId === session.id ? 'Cancelling...' : 'Cancel session'}</button></div>{reschedulingSession?.id === session.id ? <form className="reschedule-form" onSubmit={submitReschedule}><strong>Reschedule Session #{session.id}</strong><label>Room<select required value={rescheduleRoomId} onChange={(event) => setRescheduleRoomId(event.target.value)}><option value="">Choose a room</option>{rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}</select></label><label>Date<input required type="date" value={rescheduleDate} onChange={(event) => setRescheduleDate(event.target.value)} /></label><label>Start time<select required value={rescheduleTime} onChange={(event) => setRescheduleTime(event.target.value)}><option value="">Choose a time</option>{timeSlotsFor(session.session_type).map((time) => <option key={time} value={time}>{time}</option>)}</select></label><div className="button-row"><button type="submit" disabled={reschedulingSessionId === session.id}>{reschedulingSessionId === session.id ? 'Rescheduling...' : 'Confirm reschedule'}</button><button className="button-secondary" type="button" onClick={() => setReschedulingSession(null)}>Close</button></div></form> : null}{isExpanded ? <div className="attendee-panel" id={`attendees-${session.id}`}><strong className="attendee-summary">{activeCount} active attendee{activeCount === 1 ? '' : 's'} · {cancelledCount} cancelled</strong>{loadedAttendees.length === 0 ? <span className="muted">No participants booked.</span> : loadedAttendees.map((attendee) => <span key={attendee.id}>{attendee.full_name} - {attendee.email} - {attendee.status}</span>)}</div> : null}</article>;
       })}</div>}
       {ownSessions.length > 6 ? <button className="button-secondary show-more" type="button" onClick={() => setShowAllTeaching((value) => !value)}>{showAllTeaching ? 'Show fewer' : `Show all ${ownSessions.length}`}</button> : null}
     </section>
@@ -220,7 +270,7 @@ export default function CoachDashboard() {
 
     <section id="find-session" className="dashboard-section"><p className="eyebrow">Attend another coach</p><h2>Find a session</h2><p>Available sessions for the next 30 days. Attendee information is never shown here.</p>
       <div className="filters"><label>Discipline<input type="search" placeholder="Search discipline" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label>Session type<select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="all">All types</option><option value="short">Short</option><option value="standard">Standard</option><option value="intensive">Intensive</option></select></label><label>Date<input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} /></label><button className="button-secondary filter-reset" type="button" onClick={() => { setSearch(''); setTypeFilter('all'); setDateFilter(''); }}>Clear filters</button></div>
-      {displayedCatalogue.length === 0 ? <div className="empty-state"><p>No sessions match these filters.</p></div> : <div className="compact-list">{displayedCatalogue.map((session) => <article className="session-card" key={session.id}><div><strong>{session.discipline}</strong><span>{session.session_type} - {session.room_name}</span><span>{centreDateTime.format(new Date(session.starts_at))}</span><span>{session.seat_fee_credits} credits - {session.places_remaining} places left</span></div><button type="button" disabled={(session.places_remaining ?? 0) < 1} onClick={() => bookPlace(session.id)}>{(session.places_remaining ?? 0) < 1 ? 'Full' : 'Book place'}</button></article>)}</div>}
+      {displayedCatalogue.length === 0 ? <div className="empty-state"><p>No sessions match these filters.</p></div> : <div className="compact-list">{displayedCatalogue.map((session) => { const alreadyBooked = attendingIds.has(session.id); const isFull = (session.places_remaining ?? 0) < 1; return <article className="session-card" key={session.id}><div><strong>{session.discipline}</strong><span>{session.session_type} - {session.room_name}</span><span>{centreDateTime.format(new Date(session.starts_at))}</span><span>{session.seat_fee_credits} credits - {session.places_remaining} places left</span></div><button type="button" disabled={alreadyBooked || isFull} onClick={() => bookPlace(session)}>{alreadyBooked ? 'Booked' : isFull ? 'Full' : 'Book place'}</button></article>; })}</div>}
       {filteredCatalogue.length > 8 ? <button className="button-secondary show-more" type="button" onClick={() => setShowAllCatalogue((value) => !value)}>{showAllCatalogue ? 'Show fewer' : `Show more (${filteredCatalogue.length - 8})`}</button> : null}
     </section>
 

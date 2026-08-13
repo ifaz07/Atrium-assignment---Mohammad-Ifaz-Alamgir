@@ -33,7 +33,7 @@ export async function verifyPassword(password: string, passwordHash: string): Pr
   return bcrypt.compare(password, passwordHash);
 }
 
-type SessionPerson = {
+export type SessionPerson = {
   id: number;
   email: string;
   full_name: string;
@@ -43,7 +43,7 @@ type SessionPerson = {
 
 type Role = SessionPerson['kind'];
 
-async function currentSessionPerson(token: string | undefined): Promise<SessionPerson | null> {
+export async function currentSessionPerson(token: string | undefined): Promise<SessionPerson | null> {
   if (!token) return null;
 
   const people = await query<SessionPerson>(

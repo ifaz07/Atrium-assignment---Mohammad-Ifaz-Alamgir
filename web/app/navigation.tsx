@@ -47,6 +47,7 @@ export default function Navigation() {
         <Link className="brand" href="/">Atrium</Link>
         <div className="nav-links">
           <Link href="/">Sessions & policies</Link>
+          <Link href="/assistant">Assistant</Link>
           {person ? <Link href={`/${person.kind}`}>Dashboard</Link> : null}
           {person ? <Link href="/calendar">Calendar</Link> : null}
           {loaded && !person ? <Link href="/login">Log in</Link> : null}
