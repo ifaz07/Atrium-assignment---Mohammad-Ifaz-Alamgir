@@ -21,6 +21,9 @@ function emailFrom(text: string): string | null {
   const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   return match ? match[0].toLowerCase() : null;
 }
+function normalisePrompt(text: string): string {
+  return text.trim().replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/^["']+|["']+$/g, '').trim();
+}
 
 async function catalogue(): Promise<ToolResult> {
   const rows = await query(
@@ -199,21 +202,29 @@ async function cancelOwnedSession(actor: Actor, id: number): Promise<ToolResult>
   try {
     const data = await withTransaction(async client => {
       const rows = await client.query<{coach_id:number;status:string;discipline:string;starts_at:Date;room_fee_credits:number}>(`select coach_id,status,discipline,starts_at,room_fee_credits from session where id=$1 for update`,[id]);
-      if (!rows.rowCount || (actor.kind === 'coach' && rows.rows[0].coach_id !== actor.id) || rows.rows[0].status === 'cancelled') throw new Error('denied');
+      if (!rows.rowCount) throw new Error('missing');
+      if (actor.kind === 'coach' && rows.rows[0].coach_id !== actor.id) throw new Error('denied');
+      if (rows.rows[0].status === 'cancelled') throw new Error('already-cancelled');
       const enrolled = await client.query<{id:number;person_id:number;credits_charged:number;email:string;full_name:string}>("select e.id,e.person_id,e.credits_charged,p.email,p.full_name from enrolment e join person p on p.id=e.person_id where e.session_id=$1 and e.status='active' for update",[id]);
       for (const item of enrolled.rows) {
         await client.query("update enrolment set status='cancelled',credits_refunded=$1,cancelled_at=now() where id=$2",[item.credits_charged,item.id]);
         await client.query('update person set credits=credits+$1 where id=$2',[item.credits_charged,item.person_id]);
         await queueEmail(client,{recipient:item.email,subject:`Session cancelled: ${rows.rows[0].discipline}`,bodyText:`Hello ${item.full_name}, the ${rows.rows[0].discipline} session scheduled for ${formatCentreDateTime(rows.rows[0].starts_at)} was cancelled. Your full payment of ${item.credits_charged} credits has been refunded.`,eventKey:`session-cancelled:${id}:attendee:${item.person_id}`});
       }
-      const roomRefund = refundAmount(rows.rows[0].room_fee_credits, refundPercent(hoursOfNotice(new Date(), new Date(rows.rows[0].starts_at))));
+      const roomRefund = actor.kind === 'admin'
+        ? rows.rows[0].room_fee_credits
+        : refundAmount(rows.rows[0].room_fee_credits, refundPercent(hoursOfNotice(new Date(), new Date(rows.rows[0].starts_at))));
       await client.query('update person set credits=credits+$1 where id=$2',[roomRefund,rows.rows[0].coach_id]);
       await client.query("update session set status='cancelled' where id=$1",[id]);
       await queueAdministrators(client,{subject:`Room booking cancelled: ${rows.rows[0].discipline}`,bodyText:`The ${rows.rows[0].discipline} session scheduled for ${formatCentreDateTime(rows.rows[0].starts_at)} was cancelled. ${enrolled.rowCount} active attendees were fully refunded.`},`session-cancelled:${id}`);
-      return {id,status:'cancelled',participants_refunded:enrolled.rowCount,room_fee_refunded:roomRefund};
+      return {id,status:'cancelled',participants_refunded:enrolled.rowCount,room_fee_refunded:roomRefund,admin_full_refund:actor.kind === 'admin'};
     }, 'serializable');
     return {ok:true,data};
-  } catch { return {ok:false,error:'You are not allowed to cancel that session.'}; }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'already-cancelled') return {ok:false,error:'That session is already cancelled.'};
+    if (error instanceof Error && error.message === 'missing') return {ok:false,error:'That session does not exist.'};
+    return {ok:false,error:'You are not allowed to cancel that session.'};
+  }
 }
 
 async function rescheduleOwnedSession(actor: Actor, id: number, startsAt?: string, roomId?: number): Promise<ToolResult> {
@@ -286,6 +297,7 @@ export async function runAssistantTool(actor: Actor, name: string, input: { sess
   if (name === 'guest_booking' && input.sessionId && input.email) return guestBooking(input.sessionId, input.email);
   if (name === 'booking_help') return { ok: true, data: {} };
   if (name === 'anonymous_booking_help') return { ok: true, data: {} };
+  if (name === 'anonymous_account_help') return { ok: true, data: {} };
   if (name === 'reschedule_help') return { ok: true, data: {} };
   if (name === 'coach_help') return { ok: true, data: {} };
   if (name === 'admin_help') return { ok: true, data: {} };
@@ -295,6 +307,7 @@ export async function runAssistantTool(actor: Actor, name: string, input: { sess
 }
 
 function selectTool(message: string, actor: Actor): { name: string; input?: {sessionId?:number;email?:string;startsAt?:string;roomId?:number;personQuery?:string;kind?:string;credits?:number;active?:boolean} } {
+  message = normalisePrompt(message);
   const id = sessionIdFrom(message) ?? undefined; const email = emailFrom(message) ?? undefined; const lower = message.toLowerCase();
   const rescheduleMatch = message.match(/\b(?:reschedule|move)\s+(?:session\s*)?#?\s*(\d+).*?\bto\s+(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}).*?\broom\s*#?\s*(\d+)\b/i);
   const asksPrivateData = /\b(show|list|what|who|give|tell)\b/.test(lower) && /\b(every|all|other|everyone|oscar|participants?|coaches?)\b/.test(lower);
@@ -305,7 +318,7 @@ function selectTool(message: string, actor: Actor): { name: string; input?: {ses
   // through to `my_credits`.
   const asksUnauthorisedChange = /\b(change|increase|set|add|give|modify|make|update|adjust|boost|top\s*up)\b/.test(lower) && /\bcredits?|balance\b/.test(lower);
   if (actor?.kind === 'admin') {
-    if (/\b(help|what can i do|admin commands|how does this work)\b/.test(lower)) return { name:'admin_help' };
+    if (/\b(help|what\s+(?:can|i can)\s+(?:i\s+)?do|admin commands|how does this work)\b/.test(lower)) return { name:'admin_help' };
     const creditChange = message.match(/\b(?:set|change|update)\s+(?:the\s+)?credits?\s+(?:for|of)\s+(.+?)\s+to\s+(\d+)\b/i) || message.match(/\b(?:set|change|update)\s+(.+?)(?:'s)?\s+credits?\s+to\s+(\d+)\b/i);
     if (creditChange) return { name:'admin_set_credits', input:{personQuery:creditChange[1].trim().replace(/'s$/i, ''),credits:Number(creditChange[2])} };
     const accountStatus = message.match(/\b(deactivate|disable|activate|enable)\s+(?:user\s+|account\s+)?(.+?)\s*$/i);
@@ -330,6 +343,12 @@ function selectTool(message: string, actor: Actor): { name: string; input?: {ses
   }
   if (asksUnauthorisedChange || (asksPrivateData && !((actor?.kind === 'coach' || actor?.kind === 'admin') && coachSessionDetailRequest)) || (lower.includes('attendee') && actor?.kind === 'participant')) return { name:'request_private_other_person_data' };
   if (actor && (lower.includes('credit') || lower.includes('balance')) && !/\b(my|mine|i)\b/.test(lower)) return { name:'request_private_other_person_data' };
+  if (!actor && /\bmy\s+(?:bookings?|sessions?|credits?|credit\s+balance|account)\b/.test(lower)) return { name:'anonymous_account_help' };
+  if (!actor && (
+    /\b(?:users?|people|participants?|coaches?|administrators?|admins?|attendees?)\b/.test(lower) ||
+    /\b(?:credits?|balance)\b/.test(lower) ||
+    /\b(?:show|list|view|give|tell|what|who)\b.*\bbookings?\b/.test(lower)
+  )) return { name:'request_private_other_person_data' };
   if (!actor && (lower.includes('book') || lower.includes('reserve')) && id && email) return { name:'guest_booking', input:{sessionId:id,email} };
   if (!actor && (lower.includes('book') || lower.includes('reserve'))) return { name:'anonymous_booking_help' };
   if (id && /\b(cost|price|fee|how many|places|spots|when|time|details?)\b/.test(lower)) return { name:'public_session_details', input:{sessionId:id} };
@@ -388,12 +407,13 @@ function plainText(tool: string, result: ToolResult): string {
   if (tool === 'guest_booking') return 'Your place is booked. Check your email for a one-time link to create your Atrium password.';
   if (tool === 'booking_help') return 'First choose a session from the catalogue, then say: “Book session 123”. I will use your signed-in account and its available credits.';
   if (tool === 'anonymous_booking_help') return 'To book as a visitor, provide the session number and your email address. For example: “Book session 393 for name@example.com”. I will create your account and email a secure password-setup link.';
+  if (tool === 'anonymous_account_help') return 'Please sign in to view your own bookings, credits, or account details. As a visitor, I can help you find sessions or book with an email address.';
   if (tool === 'reschedule_help') return 'First ask for “Show my teaching sessions” to get an ID. Then reply exactly like this: “Reschedule session 802 to 2026-08-20 14:00 in room 2”. The date and time are America/New_York. I will check room availability and every affected attendee’s schedule before moving anyone.';
   if (tool === 'coach_help') return 'As a coach, start with: “Show my teaching sessions”. I will show your past and upcoming session IDs. Then you can say:\n• “Show attendees for session 802”\n• “Show participants for session 802”\n• “Who cancelled session 802?”\n• “Which attendees repeatedly attended my session 802?”\n• “Cancel session 802”\n• “Reschedule session 802 to 2026-08-20 14:00 in room 2”\n\nI can only show or change sessions you lead. You can also book or cancel a place in another coach’s session as an attendee.';
   if (tool === 'admin_help') return 'As an administrator, you can say:\n• “Show all users” or “Show all coaches”\n• “Show bookings for Sofia Marino” or “Show all bookings”\n• “Show all sessions”\n• “Show attendees for session 393”\n• “Show the credit balance for Oscar”\n• “Set Oscar’s credits to 2000”\n• “Deactivate Sofia Marino” or “Activate Sofia Marino”\n• “Cancel session 393”\n• “Reschedule session 393 to 2026-08-20 14:00 in room 2”';
   if (tool === 'book_my_place') { const booking = result.data as {session:string;credits_charged:number}; return `Your place in ${booking.session} is booked. ${booking.credits_charged} credits were charged.`; }
   if (tool === 'cancel_my_booking') { const cancelled = result.data as {credits_refunded:number}; return `Your booking was cancelled. ${cancelled.credits_refunded} credits were refunded.`; }
-  if (tool === 'cancel_owned_session') { const cancelled = result.data as {id:number;participants_refunded:number;room_fee_refunded:number}; return `Session ${cancelled.id} was cancelled. ${cancelled.participants_refunded} participant booking(s) were cancelled and fully refunded. ${cancelled.room_fee_refunded} room credits were refunded.`; }
+  if (tool === 'cancel_owned_session') { const cancelled = result.data as {id:number;participants_refunded:number;room_fee_refunded:number;admin_full_refund?:boolean}; return `Session ${cancelled.id} was cancelled. ${cancelled.participants_refunded} participant booking(s) were cancelled and fully refunded. ${cancelled.room_fee_refunded} room credits were refunded${cancelled.admin_full_refund ? ' in full because this was an administrator cancellation' : ''}.`; }
   if (tool === 'reschedule_owned_session') { const session = result.data as {id:number;starts_at:string;ends_at:string;participants_moved:number}; return `Session ${session.id} was rescheduled to ${formatCentreDateTime(session.starts_at)}. ${session.participants_moved} active participant booking(s) moved with it and were notified.`; }
   if (tool === 'my_bookings') {
     const bookings = result.data as Array<{session_id:number;status:string;discipline:string;starts_at:string;room_name:string;credits_charged:number;credits_refunded:number}>;

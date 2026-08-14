@@ -196,10 +196,10 @@ main > ul li button { margin-left: 10px; }
 }
 
 @media (max-width: 430px) {
-  .site-nav { display: flex; align-items: center; gap: 12px; }
+  .site-nav { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; padding: 13px 0; }
   .feedback-toast { top: 12px; right: 12px; width: calc(100% - 24px); }
   .brand { flex: 0 0 auto; margin: 0; }
-  .nav-links { display: flex; width: auto; flex: 1; flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; gap: 14px; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+  .nav-links { display: flex; width: 100%; flex: none; flex-wrap: wrap; justify-content: flex-start; overflow: visible; gap: 7px 14px; padding: 0; }
   .nav-links a { flex: 0 0 auto; overflow-wrap: normal; white-space: nowrap; }
   .nav-links .button-small { min-height: 32px; padding: 6px 10px; }
   .hero h1 { font-size: 2rem; overflow-wrap: anywhere; }

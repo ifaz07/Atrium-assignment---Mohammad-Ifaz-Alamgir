@@ -435,7 +435,7 @@ router.post('/:id/cancel', requireSession, async (req, res) => {
         throw new BookingError(403, 'not allowed');
       }
       if (session.status === 'cancelled') throw new BookingError(409, 'that session is already cancelled');
-      const percent = refundPercent(hoursOfNotice(new Date(), new Date(session.starts_at)));
+      const percent = person.kind === 'admin' ? 100 : refundPercent(hoursOfNotice(new Date(), new Date(session.starts_at)));
       const roomRefund = refundAmount(Number(session.room_fee_credits), percent);
       const enrolments = await client.query<{ id: number; person_id: number; credits_charged: number; email: string; full_name: string }>(
         `select enrolment.id, enrolment.person_id, enrolment.credits_charged, person.email, person.full_name

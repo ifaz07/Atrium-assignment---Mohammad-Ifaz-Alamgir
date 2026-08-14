@@ -41,7 +41,7 @@ Create the local environment file:
 copy .env.example .env
 ```
 
-The supplied values work for a local PostgreSQL installation using the default `postgres` username and password. If the local PostgreSQL username or password differs, update only `DATABASE_URL` and `TEST_DATABASE_URL` in `.env` before continuing.
+The supplied values work without further environment changes when PostgreSQL uses the default local `postgres` username and password. The default assistant setting uses the deterministic stub, so a model key is not required to run or test the project. If local PostgreSQL uses different credentials, update only `DATABASE_URL` and `TEST_DATABASE_URL` in `.env`.
 
 Install dependencies, apply migrations, build, and run the tests:
 
@@ -113,7 +113,7 @@ The required coach room-cancellation policy is 100% at 96+ hours, 50% at 48 to u
 
 I built one assistant at `/assistant`. It derives the caller and role from the secure session cookie. It never accepts a role or person ID from browser or chat input. Every tool performs its own role/ownership check and a permission-filtered query before data reaches the model; the model is not the access-control boundary.
 
-Use the deterministic local/test mode without an API key:
+The supplied `.env.example` uses deterministic local/test mode by default, so the assistant works without a hosted model configuration:
 
 ```env
 MODEL_PROVIDER=stub
